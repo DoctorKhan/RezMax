@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vector Rail Shooter</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            color: #fff;
+            font-family: 'Courier New', Courier, monospace;
+            cursor: crosshair;
+        }
+        canvas {
+            display: block;
+        }
+        #ui-container {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            padding: 10px;
+            background: rgba(0,0,0,0.5);
+            border-radius: 8px;
+            border: 1px solid #0ff;
+            box-shadow: 0 0 15px #0ff;
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        #score, #level, #overdrive {
+            font-size: 1.2em;
+            text-shadow: 0 0 5px #0ff;
+        }
+        #mute-button {
+            background: rgba(0, 255, 255, 0.5);
+            border: 1px solid #0ff;
+            color: #fff;
+            padding: 5px 10px;
+            border-radius: 5px;
+            cursor: pointer;
+            text-align: center;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 1em;
+        }
+        #mute-button:hover {
+            background: rgba(0, 255, 255, 0.8);
+        }
+        #reticle {
+            position: absolute;
+            width: 50px;
+            height: 50px;
+            border: 2px solid #fff;
+            border-radius: 50%;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            transition: all 0.1s ease-out;
+            pointer-events: none; /* Allows clicks to pass through to the canvas */
+            z-index: 100;
+        }
+        #reticle.locking {
+            border-color: #f0f;
+            transform: translate(-50%, -50%) scale(1.2);
+            box-shadow: 0 0 20px #f0f;
+        }
+        #start-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #000;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 200;
+            text-align: center;
+        }
+        #start-screen h1 {
+            font-size: 3em;
+            color: #0ff;
+            text-shadow: 0 0 15px #0ff;
+            margin: 0;
+        }
+        #start-screen p {
+            font-size: 1.2em;
+            max-width: 600px;
+            line-height: 1.6;
+            margin: 20px;
+        }
+        #start-button {
+            padding: 15px 30px;
+            font-size: 1.5em;
+            color: #000;
+            background: #0ff;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            box-shadow: 0 0 20px #0ff;
+            transition: all 0.2s ease;
+        }
+        #start-button:hover {
+            background: #fff;
+            box-shadow: 0 0 30px #fff;
+        }
+         #message-box {
+            position: absolute;
+            bottom: 10%;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(0, 255, 255, 0.8);
+            color: #000;
+            padding: 15px 25px;
+            border-radius: 10px;
+            font-size: 1.5em;
+            z-index: 1000;
+            opacity: 0;
+            transition: opacity 0.5s ease-in-out;
+            pointer-events: none;
+            text-align: center;
+            box-shadow: 0 0 20px #0ff;
+        }
+        #message-box.show {
+            opacity: 1;
+        }
+    </style>
+</head>
+<body>
+    <div id="start-screen">
+        <h1>VECTOR RAIL SHOOTER</h1>
+        <p>Hold Left Mouse Button to enter lock-on mode. Sweep over enemies to target them. Release to fire. Your actions create the music.</p>
+        <button id="start-button">Initialize System</button>
+    </div>
+
+    <div id="ui-container">
+        <div id="score">Score: 0</div>
+        <div id="level">Evolution: 1</div>
+        <div id="overdrive">Overdrive: 0%</div>
+        <button id="mute-button">Mute</button>
+    </div>
+    
+    <div id="reticle"></div>
+    <div id="message-box"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.7.77/Tone.js"></script>
+
+    <script>
+        // --- DOM Elements ---
+        const scoreEl = document.getElementById('score');
+        const levelEl = document.getElementById('level');
+        const overdriveEl = document.getElementById('overdrive');
+        const reticleEl = document.getElementById('reticle');
+        const startScreen = document.getElementById('start-screen');
+        const startButton = document.getElementById('start-button');
+        const messageBox = document.getElementById('message-box');
+        const muteButton = document.getElementById('mute-button');
+
+        // --- Core Components ---
+        let scene, camera, renderer, clock;
+        let player, playerAvatar;
+        let raycaster, mouse;
+        
+        // --- Game State ---
+        let score = 0;
+        let evolutionLevel = 1;
+        let overdrive = 0;
+        let isLocking = false;
+        let lockedTargets = [];
+        const MAX_LOCKS = 8;
+        let gameStarted = false;
+        let isMuted = false;
+
+        // --- Game Objects ---
+        let enemies = [];
+        let projectiles = [];
+        let particles = [];
+        let path;
+        let pathProgress = 0;
+
+        // --- Audio Engine (Tone.js) ---
+        let synth, kick, hihat, bass;
+        let musicLoop;
+
+        // --- Initialization ---
+        function init() {
+            scene = new THREE.Scene();
+            scene.fog = new THREE.Fog(0x000000, 1, 1000);
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.body.appendChild(renderer.domElement);
+            clock = new THREE.Clock();
+            player = new THREE.Group();
+            scene.add(player);
+            updatePlayerAvatar();
+            raycaster = new THREE.Raycaster();
+            mouse = new THREE.Vector2();
+            createPath();
+            createEnvironment();
+            
+            window.addEventListener('resize', onWindowResize, false);
+            window.addEventListener('mousemove', onMouseMove, false);
+            window.addEventListener('mousedown', onMouseDown, false);
+            window.addEventListener('mouseup', onMouseUp, false);
+            muteButton.addEventListener('click', toggleMute);
+        }
+
+        function initAudio() {
+            Tone.start();
+            synth = new Tone.PolySynth(Tone.Synth, { oscillator: { type: 'fmsquare' }, envelope: { attack: 0.01, decay: 0.1, sustain: 0.2, release: 0.1 } }).toDestination();
+            kick = new Tone.MembraneSynth({ pitchDecay: 0.05, octaves: 10, oscillator: { type: 'sine' }, envelope: { attack: 0.001, decay: 0.4, sustain: 0.01, release: 1.4, attackCurve: 'exponential' } }).toDestination();
+            hihat = new Tone.MetalSynth({ frequency: 200, envelope: { attack: 0.001, decay: 0.1, release: 0.01 }, harmonicity: 5.1, modulationIndex: 32, resonance: 4000, octaves: 1.5 }).toDestination();
+            bass = new Tone.MonoSynth({ oscillator: { type: "fmsawtooth", modulationType: "triangle", modulationIndex: 2, harmonicity: 0.501 }, envelope: { attack: 0.01, decay: 0.1, sustain: 0.2, release: 0.4 } }).toDestination();
+
+            let beat = 0;
+            musicLoop = new Tone.Loop(time => {
+                if (beat % 4 === 0) kick.triggerAttackRelease('C1', '8n', time);
+                if (beat % 2 === 0) hihat.triggerAttackRelease('16n', time, 0.5);
+                if (beat % 8 === 0) bass.triggerAttackRelease('C0', '4n', time);
+                beat = (beat + 1) % 16;
+            }, '8n').start(0);
+
+            Tone.Transport.bpm.value = 120;
+            Tone.Transport.start();
+        }
+        
+        // --- Game Object Creation ---
+
+        function createPath() {
+            path = new THREE.CatmullRomCurve3([
+                new THREE.Vector3(0, 5, 200), new THREE.Vector3(0, 5, 0),
+                new THREE.Vector3(50, 10, -50), new THREE.Vector3(0, 15, -150),
+                new THREE.Vector3(-80, 20, -250), new THREE.Vector3(-60, 10, -400),
+                new THREE.Vector3(60, 15, -550), new THREE.Vector3(0, 5, -700)
+            ]);
+            const points = path.getPoints(500);
+            const geometry = new THREE.BufferGeometry().setFromPoints(points);
+            const material = new THREE.LineBasicMaterial({ color: 0x00ffff, opacity: 0.2, transparent: true });
+            const curveObject = new THREE.Line(geometry, material);
+            scene.add(curveObject);
+        }
+
+        function createEnvironment() {
+            const gridHelper = new THREE.GridHelper(2000, 100, 0x00ffff, 0x00ffff);
+            gridHelper.material.opacity = 0.2;
+            gridHelper.material.transparent = true;
+            scene.add(gridHelper);
+
+            const boxGeo = new THREE.BoxGeometry(10, 10, 10);
+            for (let i = 0; i < 200; i++) {
+                const material = new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: true });
+                const box = new THREE.Mesh(boxGeo, material);
+                box.position.set((Math.random() - 0.5) * 1500, (Math.random() - 0.5) * 500, (Math.random() - 0.5) * 2000);
+                scene.add(box);
+            }
+        }
+
+        function spawnEnemy() {
+            const enemyTypes = [
+                { geo: new THREE.IcosahedronGeometry(3, 0), color: 0xff00ff },
+                { geo: new THREE.TorusGeometry(3, 1, 4, 8), color: 0xffff00 },
+                { geo: new THREE.ConeGeometry(3, 8, 4), color: 0x00ff00 }
+            ];
+            const type = enemyTypes[Math.floor(Math.random() * enemyTypes.length)];
+            const material = new THREE.MeshBasicMaterial({ color: type.color, wireframe: true });
+            const enemy = new THREE.Mesh(type.geo, material);
+            
+            const spawnAhead = 0.1 + Math.random() * 0.05;
+            const spawnPoint = path.getPointAt((pathProgress + spawnAhead) % 1);
+            spawnPoint.x += (Math.random() - 0.5) * 80;
+            spawnPoint.y += (Math.random() - 0.5) * 40;
+            enemy.position.copy(spawnPoint);
+            enemy.userData.isEnemy = true;
+            enemy.userData.isLocked = false;
+            
+            const outlineGeo = new THREE.EdgesGeometry(enemy.geometry);
+            const outlineMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 });
+            const outline = new THREE.LineSegments(outlineGeo, outlineMat);
+            enemy.add(outline);
+            enemy.userData.outline = outline;
+
+            enemies.push(enemy);
+            scene.add(enemy);
+        }
+        
+        function createProjectile(start, end) {
+            const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), end.clone().sub(start)]);
+            const mat = new THREE.LineBasicMaterial({ color: 0x00ffff, linewidth: 2 });
+            const projectile = new THREE.Line(geo, mat);
+            projectile.position.copy(start);
+            projectile.userData.target = end;
+            projectile.userData.speed = 10;
+            projectiles.push(projectile);
+            scene.add(projectile);
+        }
+        
+        function createExplosion(position, color) {
+            const particleCount = 20;
+            for (let i = 0; i < particleCount; i++) {
+                const geo = new THREE.SphereGeometry(0.2, 4, 4);
+                const mat = new THREE.MeshBasicMaterial({ color: color, transparent: true });
+                const particle = new THREE.Mesh(geo, mat);
+                particle.position.copy(position);
+                particle.userData.velocity = new THREE.Vector3((Math.random() - 0.5), (Math.random() - 0.5), (Math.random() - 0.5)).normalize().multiplyScalar(Math.random() * 5 + 2);
+                particle.userData.lifespan = 1.0;
+                particles.push(particle);
+                scene.add(particle);
+            }
+        }
+        
+        function createPointCloudAvatar() {
+            const avatarSource = new THREE.Group();
+            const detail = evolutionLevel + 1;
+            const bodyDetail = Math.max(1, detail - 1);
+
+            const head = new THREE.Mesh(new THREE.SphereGeometry(0.5, 4 * detail, 4 * detail));
+            head.position.y = 1.5;
+            const torso = new THREE.Mesh(new THREE.BoxGeometry(1, 1.5, 0.5, bodyDetail, bodyDetail, bodyDetail));
+            const armL = new THREE.Mesh(new THREE.BoxGeometry(0.25, 1.2, 0.25, bodyDetail, bodyDetail, bodyDetail));
+            armL.position.set(-0.7, 0.2, 0);
+            const armR = armL.clone(); armR.position.x = 0.7;
+            const legL = new THREE.Mesh(new THREE.BoxGeometry(0.3, 1.5, 0.3, bodyDetail, bodyDetail, bodyDetail));
+            legL.position.set(-0.3, -1.5, 0);
+            const legR = legL.clone(); legR.position.x = 0.3;
+
+            avatarSource.add(head, torso, armL, armR, legL, legR);
+            avatarSource.userData.limbs = { head, torso, armL, armR, legL, legR };
+
+            let totalVertices = 0;
+            avatarSource.children.forEach(child => {
+                totalVertices += child.geometry.attributes.position.count;
+            });
+
+            const pointsGeometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(totalVertices * 3);
+            const velocities = new Float32Array(totalVertices * 3);
+            const targetPositions = new Float32Array(totalVertices * 3);
+
+            pointsGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            pointsGeometry.setAttribute('velocity', new THREE.BufferAttribute(velocities, 3));
+            pointsGeometry.setAttribute('targetPos', new THREE.BufferAttribute(targetPositions, 3));
+
+            const shaderMaterial = new THREE.ShaderMaterial({
+                uniforms: {
+                    time: { value: 1.0 },
+                    color: { value: new THREE.Color(0x00ffff) }
+                },
+                vertexShader: `
+                    uniform float time;
+                    uniform vec3 color;
+                    varying vec3 vColor;
+                    void main() {
+                        vColor = color;
+                        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                        gl_PointSize = (15.0 / -mvPosition.z) * (1.0 + sin(time * 5.0 + position.x));
+                        gl_Position = projectionMatrix * mvPosition;
+                    }
+                `,
+                fragmentShader: `
+                    varying vec3 vColor;
+                    void main() {
+                        float d = distance(gl_PointCoord, vec2(0.5, 0.5));
+                        if (d > 0.5) discard;
+                        gl_FragColor = vec4(vColor, (1.0 - d * 2.0) * 0.8);
+                    }
+                `,
+                blending: THREE.AdditiveBlending,
+                depthTest: false,
+                transparent: true
+            });
+
+            const pointCloud = new THREE.Points(pointsGeometry, shaderMaterial);
+            pointCloud.userData.source = avatarSource;
+            return pointCloud;
+        }
+
+        function updatePlayerAvatar() {
+            if (playerAvatar) {
+                player.remove(playerAvatar);
+            }
+            playerAvatar = createPointCloudAvatar();
+            player.add(playerAvatar);
+        }
+        
+        function updateAvatarPose(delta) {
+            if (!playerAvatar) return;
+
+            const source = playerAvatar.userData.source;
+            const { armL, armR, legL, legR } = source.userData.limbs;
+            const lerpFactor = delta * 5;
+
+            if (isLocking) { // Flying Pose
+                armL.rotation.x = THREE.MathUtils.lerp(armL.rotation.x, -Math.PI / 2, lerpFactor);
+                armR.rotation.x = THREE.MathUtils.lerp(armR.rotation.x, -Math.PI / 2, lerpFactor);
+                legL.rotation.x = THREE.MathUtils.lerp(legL.rotation.x, 0, lerpFactor);
+                legR.rotation.x = THREE.MathUtils.lerp(legR.rotation.x, 0, lerpFactor);
+                legL.position.z = THREE.MathUtils.lerp(legL.position.z, 0, lerpFactor);
+                legR.position.z = THREE.MathUtils.lerp(legR.position.z, 0, lerpFactor);
+            } else { // Meditative Pose
+                armL.rotation.x = THREE.MathUtils.lerp(armL.rotation.x, -Math.PI / 4, lerpFactor);
+                armR.rotation.x = THREE.MathUtils.lerp(armR.rotation.x, -Math.PI / 4, lerpFactor);
+                legL.rotation.x = THREE.MathUtils.lerp(legL.rotation.x, Math.PI / 2, lerpFactor);
+                legR.rotation.x = THREE.MathUtils.lerp(legR.rotation.x, -Math.PI / 2, lerpFactor);
+                legL.position.z = THREE.MathUtils.lerp(legL.position.z, 0.5, lerpFactor);
+                legR.position.z = THREE.MathUtils.lerp(legR.position.z, -0.5, lerpFactor);
+            }
+            
+            source.updateMatrixWorld(true);
+            let offset = 0;
+            const targetPosAttr = playerAvatar.geometry.attributes.targetPos;
+            const tempVertex = new THREE.Vector3();
+
+            source.children.forEach(child => {
+                const sourcePositions = child.geometry.attributes.position;
+                for (let i = 0; i < sourcePositions.count; i++) {
+                    tempVertex.fromBufferAttribute(sourcePositions, i);
+                    tempVertex.applyMatrix4(child.matrixWorld);
+                    targetPosAttr.setXYZ(offset, tempVertex.x, tempVertex.y, tempVertex.z);
+                    offset++;
+                }
+            });
+            targetPosAttr.needsUpdate = true;
+        }
+
+        function updatePointCloudPhysics(delta) {
+            if (!playerAvatar) return;
+
+            const positions = playerAvatar.geometry.attributes.position;
+            const velocities = playerAvatar.geometry.attributes.velocity;
+            const targets = playerAvatar.geometry.attributes.targetPos;
+            const time = clock.getElapsedTime();
+
+            const attractionForce = 0.5;
+            const damping = 0.92;
+            const turbulence = 0.01;
+
+            for (let i = 0; i < positions.count; i++) {
+                const p = new THREE.Vector3().fromBufferAttribute(positions, i);
+                const v = new THREE.Vector3().fromBufferAttribute(velocities, i);
+                const t = new THREE.Vector3().fromBufferAttribute(targets, i);
+
+                // Attraction to target
+                const force = t.clone().sub(p).multiplyScalar(attractionForce);
+                v.add(force.multiplyScalar(delta));
+
+                // Damping
+                v.multiplyScalar(damping);
+
+                // Turbulence / Noise
+                const noise = new THREE.Vector3(
+                    (Math.sin(time * 2 + p.y * 0.5) * 0.5 + 0.5),
+                    (Math.cos(time * 2 + p.x * 0.5) * 0.5 + 0.5),
+                    (Math.sin(time * 2 + p.z * 0.5) * 0.5 + 0.5)
+                ).subScalar(0.5).multiplyScalar(turbulence);
+                v.add(noise);
+
+                p.add(v.clone().multiplyScalar(delta));
+
+                positions.setXYZ(i, p.x, p.y, p.z);
+                velocities.setXYZ(i, v.x, v.y, v.z);
+            }
+            positions.needsUpdate = true;
+            velocities.needsUpdate = true;
+        }
+
+        // --- Game Loop and Logic ---
+        function animate() {
+            if (!gameStarted) return;
+            
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            const time = clock.getElapsedTime();
+
+            pathProgress += delta * 0.01;
+            if (pathProgress > 1) { pathProgress = 0; showMessage("SYSTEM LOOP COMPLETE"); }
+            
+            const currentPos = path.getPointAt(pathProgress);
+            const nextPos = path.getPointAt((pathProgress + 0.001) % 1);
+            camera.position.copy(currentPos);
+            camera.lookAt(nextPos);
+            
+            player.position.copy(camera.position).add(camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(15));
+            player.lookAt(camera.position.clone().add(camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(20)));
+            
+            updateAvatarPose(delta);
+            updatePointCloudPhysics(delta);
+            if(playerAvatar) playerAvatar.material.uniforms.time.value = time;
+
+            if (Math.random() < 0.02) spawnEnemy();
+            
+            updateEnemies(delta);
+            updateProjectiles(delta);
+            updateParticles(delta);
+            
+            if (isLocking) handleLocking();
+
+            renderer.render(scene, camera);
+        }
+
+        function updateEnemies(delta) {
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                const enemy = enemies[i];
+                enemy.rotation.x += delta * 0.2;
+                enemy.rotation.y += delta * 0.3;
+                
+                const distanceToPlayer = enemy.position.distanceTo(camera.position);
+                const directionToPlayer = enemy.position.clone().sub(camera.position).normalize();
+                const cameraDirection = camera.getWorldDirection(new THREE.Vector3());
+                const dot = directionToPlayer.dot(cameraDirection);
+
+                if (dot < -0.5 && distanceToPlayer > 100) {
+                    scene.remove(enemy);
+                    enemies.splice(i, 1);
+                }
+            }
+        }
+        
+        function updateProjectiles(delta) {
+            for (let i = projectiles.length - 1; i >= 0; i--) {
+                const p = projectiles[i];
+                const moveDist = p.userData.speed * delta;
+                const distanceToTarget = p.position.distanceTo(p.userData.target);
+
+                if (distanceToTarget < moveDist) {
+                    scene.remove(p);
+                    projectiles.splice(i, 1);
+                } else {
+                    const direction = p.userData.target.clone().sub(p.position).normalize();
+                    p.position.add(direction.multiplyScalar(moveDist));
+                }
+            }
+        }
+        
+        function updateParticles(delta) {
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i];
+                p.userData.lifespan -= delta;
+                if (p.userData.lifespan <= 0) {
+                    scene.remove(p);
+                    particles.splice(i, 1);
+                } else {
+                    p.position.add(p.userData.velocity.clone().multiplyScalar(delta));
+                    p.material.opacity = p.userData.lifespan;
+                }
+            }
+        }
+
+        function handleLocking() {
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(enemies);
+
+            if (intersects.length > 0) {
+                const target = intersects[0].object;
+                if (!target.userData.isLocked && lockedTargets.length < MAX_LOCKS) {
+                    target.userData.isLocked = true;
+                    target.userData.outline.material.opacity = 1;
+                    lockedTargets.push(target);
+                    const note = ['C4', 'D4', 'E4', 'F4', 'G4', 'A4', 'B4', 'C5'][lockedTargets.length - 1];
+                    synth.triggerAttackRelease(note, '16n');
+                }
+            }
+        }
+
+        function fireProjectiles() {
+            if (lockedTargets.length === 0) return;
+
+            bass.triggerAttackRelease(lockedTargets.length > 4 ? 'G1' : 'C1', '8n');
+
+            lockedTargets.forEach((target, i) => {
+                const startPos = player.position.clone();
+                const endPos = target.position.clone();
+                createProjectile(startPos, endPos);
+                
+                setTimeout(() => {
+                    if (enemies.includes(target)) {
+                        const index = enemies.indexOf(target);
+                        enemies.splice(index, 1);
+                        scene.remove(target);
+                        kick.triggerAttackRelease('C2', '8n', Tone.now() + i * 0.05);
+                        createExplosion(target.position, target.material.color);
+                        updateScore(100 * (i + 1));
+                    }
+                }, 300 + i * 50);
+            });
+
+            updateOverdrive(lockedTargets.length);
+            lockedTargets = [];
+        }
+        
+        // --- UI and State Updates ---
+        
+        function updateScore(points) {
+            score += points;
+            scoreEl.textContent = `Score: ${score}`;
+            
+            const oldLevel = evolutionLevel;
+            evolutionLevel = Math.floor(score / 2000) + 1;
+            if (evolutionLevel > oldLevel) {
+                updatePlayerAvatar();
+                levelEl.textContent = `Evolution: ${evolutionLevel}`;
+                showMessage(`EVOLUTION LEVEL ${evolutionLevel}`);
+            }
+        }
+        
+        function updateOverdrive(amount) {
+            overdrive = Math.min(100, overdrive + amount * 2);
+            overdriveEl.textContent = `Overdrive: ${Math.floor(overdrive)}%`;
+        }
+        
+        function showMessage(text) {
+            messageBox.textContent = text;
+            messageBox.classList.add('show');
+            setTimeout(() => { messageBox.classList.remove('show'); }, 2000);
+        }
+
+        function toggleMute() {
+            isMuted = !isMuted;
+            Tone.Master.mute = isMuted;
+            muteButton.textContent = isMuted ? 'Unmute' : 'Mute';
+        }
+
+        // --- Event Handlers ---
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function onMouseMove(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            reticleEl.style.left = `${event.clientX}px`;
+            reticleEl.style.top = `${event.clientY}px`;
+        }
+
+        function onMouseDown(event) {
+            if (event.button === 0 && gameStarted) {
+                isLocking = true;
+                reticleEl.classList.add('locking');
+            }
+        }
+
+        function onMouseUp(event) {
+            if (event.button === 0 && gameStarted) {
+                isLocking = false;
+                reticleEl.classList.remove('locking');
+                fireProjectiles();
+                enemies.forEach(e => {
+                    if (e.userData.isLocked) {
+                        e.userData.isLocked = false;
+                        e.userData.outline.material.opacity = 0;
+                    }
+                });
+            }
+        }
+
+        startButton.addEventListener('click', () => {
+            startScreen.style.opacity = 0;
+            setTimeout(() => { startScreen.style.display = 'none'; }, 500);
+            gameStarted = true;
+            initAudio();
+            animate();
+        });
+
+        init();
+    </script>
+</body>
+</html>
