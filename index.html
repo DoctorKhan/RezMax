@@ -3,8 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Rez Max
-    </title>
+    <title>Rez Max</title>
     <style>
         body {
             margin: 0;
@@ -58,7 +57,6 @@
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            transition: all 0.1s ease-out;
             pointer-events: none; /* Allows clicks to pass through to the canvas */
             z-index: 100;
         }
@@ -73,13 +71,14 @@
             left: 0;
             width: 100%;
             height: 100%;
-            background: #000;
+            background: rgba(0,0,0,0.8);
             display: flex;
             flex-direction: column;
             justify-content: center;
             align-items: center;
             z-index: 200;
             text-align: center;
+            transition: opacity 0.5s ease;
         }
         #start-screen h1 {
             font-size: 3em;
@@ -132,8 +131,8 @@
 </head>
 <body>
     <div id="start-screen">
-        <h1>VECTOR RAIL SHOOTER</h1>
-        <p>Hold Left Mouse Button to enter lock-on mode. Sweep over enemies to target them. Release to fire. Your actions create the music.</p>
+        <h1 id="game-title">REZ MAX</h1>
+        <p id="instructions">Hold Left Mouse Button to lock on. Release to fire.<br>Press Spacebar at 100% Overdrive to clear the screen. Avoid enemies.</p>
         <button id="start-button">Initialize System</button>
     </div>
 
@@ -160,6 +159,8 @@
         const startButton = document.getElementById('start-button');
         const messageBox = document.getElementById('message-box');
         const muteButton = document.getElementById('mute-button');
+        const gameTitleEl = document.getElementById('game-title');
+        const instructionsEl = document.getElementById('instructions');
 
         // --- Core Components ---
         let scene, camera, renderer, clock;
@@ -182,10 +183,12 @@
         let particles = [];
         let path;
         let pathProgress = 0;
+        let overdriveShockwave;
 
         // --- Audio Engine (Tone.js) ---
-        let synth, kick, hihat, bass;
-        let musicLoop;
+        let synth, kick, hihat, bassSynth, melodySynth;
+        let musicLoop, bassLoop, melodyLoop;
+        let noise;
 
         // --- Initialization ---
         function init() {
@@ -209,23 +212,40 @@
             window.addEventListener('mousemove', onMouseMove, false);
             window.addEventListener('mousedown', onMouseDown, false);
             window.addEventListener('mouseup', onMouseUp, false);
+            window.addEventListener('keydown', onKeyDown, false);
             muteButton.addEventListener('click', toggleMute);
         }
 
         function initAudio() {
             Tone.start();
+            // Instruments
             synth = new Tone.PolySynth(Tone.Synth, { oscillator: { type: 'fmsquare' }, envelope: { attack: 0.01, decay: 0.1, sustain: 0.2, release: 0.1 } }).toDestination();
             kick = new Tone.MembraneSynth({ pitchDecay: 0.05, octaves: 10, oscillator: { type: 'sine' }, envelope: { attack: 0.001, decay: 0.4, sustain: 0.01, release: 1.4, attackCurve: 'exponential' } }).toDestination();
             hihat = new Tone.MetalSynth({ frequency: 200, envelope: { attack: 0.001, decay: 0.1, release: 0.01 }, harmonicity: 5.1, modulationIndex: 32, resonance: 4000, octaves: 1.5 }).toDestination();
-            bass = new Tone.MonoSynth({ oscillator: { type: "fmsawtooth", modulationType: "triangle", modulationIndex: 2, harmonicity: 0.501 }, envelope: { attack: 0.01, decay: 0.1, sustain: 0.2, release: 0.4 } }).toDestination();
+            bassSynth = new Tone.MonoSynth({ oscillator: { type: "fmsawtooth", modulationType: "triangle", modulationIndex: 2, harmonicity: 0.501 }, envelope: { attack: 0.01, decay: 0.1, sustain: 0.2, release: 0.4 } }).toDestination();
+            melodySynth = new Tone.FMSynth({ harmonicity: 3, modulationIndex: 10, detune: 0, oscillator: { type: "sine" }, envelope: { attack: 0.01, decay: 0.01, sustain: 1, release: 0.5 }, modulation: { type: "square" }, modulationEnvelope: { attack: 0.5, decay: 0, sustain: 1, release: 0.5 } }).toDestination();
+            noise = new Tone.NoiseSynth({ noise: { type: 'white' }, envelope: { attack: 0.005, decay: 0.1, sustain: 0 } }).toDestination();
 
+            // Music Loops (created but not started)
             let beat = 0;
             musicLoop = new Tone.Loop(time => {
                 if (beat % 4 === 0) kick.triggerAttackRelease('C1', '8n', time);
                 if (beat % 2 === 0) hihat.triggerAttackRelease('16n', time, 0.5);
-                if (beat % 8 === 0) bass.triggerAttackRelease('C0', '4n', time);
                 beat = (beat + 1) % 16;
             }, '8n').start(0);
+
+            const bassPattern = ['C1', null, 'G0', null, 'C1', null, 'A0', null];
+            bassLoop = new Tone.Sequence((time, note) => {
+                if(note) bassSynth.triggerAttackRelease(note, '8n', time);
+            }, bassPattern, '4n');
+
+            const melodyPattern = ['C4', 'E4', 'G4', 'B4', 'C5', 'B4', 'G4', 'E4'];
+            let melodyIndex = 0;
+            melodyLoop = new Tone.Loop(time => {
+                let note = melodyPattern[melodyIndex % melodyPattern.length];
+                melodySynth.triggerAttackRelease(note, "16n", time);
+                melodyIndex++;
+            }, '8n');
 
             Tone.Transport.bpm.value = 120;
             Tone.Transport.start();
@@ -315,85 +335,72 @@
             }
         }
         
-        function createPointCloudAvatar() {
-            const avatarSource = new THREE.Group();
-            const detail = evolutionLevel + 1;
-            const bodyDetail = Math.max(1, detail - 1);
-
-            const head = new THREE.Mesh(new THREE.SphereGeometry(0.5, 4 * detail, 4 * detail));
-            head.position.y = 1.5;
-            const torso = new THREE.Mesh(new THREE.BoxGeometry(1, 1.5, 0.5, bodyDetail, bodyDetail, bodyDetail));
-            const armL = new THREE.Mesh(new THREE.BoxGeometry(0.25, 1.2, 0.25, bodyDetail, bodyDetail, bodyDetail));
-            armL.position.set(-0.7, 0.2, 0);
-            const armR = armL.clone(); armR.position.x = 0.7;
-            const legL = new THREE.Mesh(new THREE.BoxGeometry(0.3, 1.5, 0.3, bodyDetail, bodyDetail, bodyDetail));
-            legL.position.set(-0.3, -1.5, 0);
-            const legR = legL.clone(); legR.position.x = 0.3;
-
-            avatarSource.add(head, torso, armL, armR, legL, legR);
-            avatarSource.userData.limbs = { head, torso, armL, armR, legL, legR };
-
-            let totalVertices = 0;
-            avatarSource.children.forEach(child => {
-                totalVertices += child.geometry.attributes.position.count;
-            });
-
-            const pointsGeometry = new THREE.BufferGeometry();
-            const positions = new Float32Array(totalVertices * 3);
-            const velocities = new Float32Array(totalVertices * 3);
-            const targetPositions = new Float32Array(totalVertices * 3);
-
-            pointsGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-            pointsGeometry.setAttribute('velocity', new THREE.BufferAttribute(velocities, 3));
-            pointsGeometry.setAttribute('targetPos', new THREE.BufferAttribute(targetPositions, 3));
-
+        function createHumanoidAvatar() {
+            const avatar = new THREE.Group();
+            
             const shaderMaterial = new THREE.ShaderMaterial({
                 uniforms: {
-                    time: { value: 1.0 },
-                    color: { value: new THREE.Color(0x00ffff) }
+                    time: { value: 0 },
+                    color: { value: new THREE.Color(0x00ffff) },
+                    glowColor: { value: new THREE.Color(0x00ffff) }
                 },
                 vertexShader: `
-                    uniform float time;
-                    uniform vec3 color;
-                    varying vec3 vColor;
+                    varying vec3 vNormal;
+                    varying vec3 vPosition;
                     void main() {
-                        vColor = color;
-                        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-                        gl_PointSize = (15.0 / -mvPosition.z) * (1.0 + sin(time * 5.0 + position.x));
-                        gl_Position = projectionMatrix * mvPosition;
+                        vNormal = normalize(normalMatrix * normal);
+                        vPosition = (modelViewMatrix * vec4(position, 1.0)).xyz;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
                     }
                 `,
                 fragmentShader: `
-                    varying vec3 vColor;
+                    uniform float time;
+                    uniform vec3 color;
+                    uniform vec3 glowColor;
+                    varying vec3 vNormal;
+                    varying vec3 vPosition;
                     void main() {
-                        float d = distance(gl_PointCoord, vec2(0.5, 0.5));
-                        if (d > 0.5) discard;
-                        gl_FragColor = vec4(vColor, (1.0 - d * 2.0) * 0.8);
+                        vec3 viewDir = normalize(-vPosition);
+                        float fresnel = 1.0 - dot(viewDir, vNormal);
+                        fresnel = pow(fresnel, 2.0);
+                        float scanline = sin(vPosition.y * 20.0 - time * 10.0) * 0.1 + 0.9;
+                        vec3 finalColor = mix(color, glowColor, fresnel);
+                        gl_FragColor = vec4(finalColor * scanline, fresnel * 0.8 + 0.2);
                     }
                 `,
-                blending: THREE.AdditiveBlending,
-                depthTest: false,
-                transparent: true
+                transparent: true,
+                blending: THREE.AdditiveBlending
             });
 
-            const pointCloud = new THREE.Points(pointsGeometry, shaderMaterial);
-            pointCloud.userData.source = avatarSource;
-            return pointCloud;
+            const head = new THREE.Mesh(new THREE.SphereGeometry(0.5, 16, 16), shaderMaterial);
+            head.position.y = 1.5;
+            const torso = new THREE.Mesh(new THREE.BoxGeometry(1, 1.5, 0.5), shaderMaterial);
+            const armL = new THREE.Mesh(new THREE.BoxGeometry(0.25, 1.2, 0.25), shaderMaterial);
+            armL.position.set(-0.7, 0.2, 0);
+            const armR = armL.clone();
+            armR.position.x = 0.7;
+            const legL = new THREE.Mesh(new THREE.BoxGeometry(0.3, 1.5, 0.3), shaderMaterial);
+            legL.position.set(-0.3, -1.5, 0);
+            const legR = legL.clone();
+            legR.position.x = 0.3;
+
+            avatar.add(head, torso, armL, armR, legL, legR);
+            avatar.userData.limbs = { head, torso, armL, armR, legL, legR };
+            avatar.userData.material = shaderMaterial;
+            return avatar;
         }
 
         function updatePlayerAvatar() {
-            if (playerAvatar) {
-                player.remove(playerAvatar);
-            }
-            playerAvatar = createPointCloudAvatar();
+            if (playerAvatar) player.remove(playerAvatar);
+            playerAvatar = createHumanoidAvatar();
+            const scale = 1 + (evolutionLevel - 1) * 0.25;
+            playerAvatar.scale.set(scale, scale, scale);
             player.add(playerAvatar);
         }
         
         function updateAvatarPose(delta) {
             if (!playerAvatar) return;
-
-            const source = playerAvatar.userData.source;
-            const { armL, armR, legL, legR } = source.userData.limbs;
+            const { armL, armR, legL, legR } = playerAvatar.userData.limbs;
             const lerpFactor = delta * 5;
 
             if (isLocking) { // Flying Pose
@@ -411,63 +418,30 @@
                 legL.position.z = THREE.MathUtils.lerp(legL.position.z, 0.5, lerpFactor);
                 legR.position.z = THREE.MathUtils.lerp(legR.position.z, -0.5, lerpFactor);
             }
-            
-            source.updateMatrixWorld(true);
-            let offset = 0;
-            const targetPosAttr = playerAvatar.geometry.attributes.targetPos;
-            const tempVertex = new THREE.Vector3();
-
-            source.children.forEach(child => {
-                const sourcePositions = child.geometry.attributes.position;
-                for (let i = 0; i < sourcePositions.count; i++) {
-                    tempVertex.fromBufferAttribute(sourcePositions, i);
-                    tempVertex.applyMatrix4(child.matrixWorld);
-                    targetPosAttr.setXYZ(offset, tempVertex.x, tempVertex.y, tempVertex.z);
-                    offset++;
-                }
-            });
-            targetPosAttr.needsUpdate = true;
         }
 
-        function updatePointCloudPhysics(delta) {
-            if (!playerAvatar) return;
+        function triggerOverdrive() {
+            if (overdrive < 100) return;
+            overdrive = 0;
+            updateOverdrive(0); // Update UI immediately
 
-            const positions = playerAvatar.geometry.attributes.position;
-            const velocities = playerAvatar.geometry.attributes.velocity;
-            const targets = playerAvatar.geometry.attributes.targetPos;
-            const time = clock.getElapsedTime();
+            noise.triggerAttackRelease("2n");
 
-            const attractionForce = 0.5;
-            const damping = 0.92;
-            const turbulence = 0.01;
+            // Visual effect
+            const shockwaveGeo = new THREE.SphereGeometry(1, 32, 32);
+            const shockwaveMat = new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.8 });
+            overdriveShockwave = new THREE.Mesh(shockwaveGeo, shockwaveMat);
+            overdriveShockwave.position.copy(player.position);
+            scene.add(overdriveShockwave);
 
-            for (let i = 0; i < positions.count; i++) {
-                const p = new THREE.Vector3().fromBufferAttribute(positions, i);
-                const v = new THREE.Vector3().fromBufferAttribute(velocities, i);
-                const t = new THREE.Vector3().fromBufferAttribute(targets, i);
-
-                // Attraction to target
-                const force = t.clone().sub(p).multiplyScalar(attractionForce);
-                v.add(force.multiplyScalar(delta));
-
-                // Damping
-                v.multiplyScalar(damping);
-
-                // Turbulence / Noise
-                const noise = new THREE.Vector3(
-                    (Math.sin(time * 2 + p.y * 0.5) * 0.5 + 0.5),
-                    (Math.cos(time * 2 + p.x * 0.5) * 0.5 + 0.5),
-                    (Math.sin(time * 2 + p.z * 0.5) * 0.5 + 0.5)
-                ).subScalar(0.5).multiplyScalar(turbulence);
-                v.add(noise);
-
-                p.add(v.clone().multiplyScalar(delta));
-
-                positions.setXYZ(i, p.x, p.y, p.z);
-                velocities.setXYZ(i, v.x, v.y, v.z);
+            // Destroy all enemies
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                const enemy = enemies[i];
+                createExplosion(enemy.position, enemy.material.color);
+                updateScore(50); // Bonus points for overdrive kills
+                scene.remove(enemy);
+                enemies.splice(i, 1);
             }
-            positions.needsUpdate = true;
-            velocities.needsUpdate = true;
         }
 
         // --- Game Loop and Logic ---
@@ -490,10 +464,20 @@
             player.lookAt(camera.position.clone().add(camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(20)));
             
             updateAvatarPose(delta);
-            updatePointCloudPhysics(delta);
-            if(playerAvatar) playerAvatar.material.uniforms.time.value = time;
+            if(playerAvatar) playerAvatar.userData.material.uniforms.time.value = time;
 
-            if (Math.random() < 0.02) spawnEnemy();
+            if (overdriveShockwave) {
+                overdriveShockwave.scale.x += delta * 300;
+                overdriveShockwave.scale.y += delta * 300;
+                overdriveShockwave.scale.z += delta * 300;
+                overdriveShockwave.material.opacity -= delta * 0.8;
+                if (overdriveShockwave.material.opacity <= 0) {
+                    scene.remove(overdriveShockwave);
+                    overdriveShockwave = null;
+                }
+            }
+
+            if (Math.random() < 0.03) spawnEnemy();
             
             updateEnemies(delta);
             updateProjectiles(delta);
@@ -510,6 +494,14 @@
                 enemy.rotation.x += delta * 0.2;
                 enemy.rotation.y += delta * 0.3;
                 
+                // Collision check with player
+                if (enemy.position.distanceTo(player.position) < 3) {
+                    playerTakeDamage();
+                    scene.remove(enemy);
+                    enemies.splice(i, 1);
+                    continue; // Skip next check
+                }
+
                 const distanceToPlayer = enemy.position.distanceTo(camera.position);
                 const directionToPlayer = enemy.position.clone().sub(camera.position).normalize();
                 const cameraDirection = camera.getWorldDirection(new THREE.Vector3());
@@ -570,14 +562,11 @@
 
         function fireProjectiles() {
             if (lockedTargets.length === 0) return;
-
-            bass.triggerAttackRelease(lockedTargets.length > 4 ? 'G1' : 'C1', '8n');
-
+            bassSynth.triggerAttackRelease(lockedTargets.length > 4 ? 'G1' : 'C1', '8n');
             lockedTargets.forEach((target, i) => {
                 const startPos = player.position.clone();
                 const endPos = target.position.clone();
                 createProjectile(startPos, endPos);
-                
                 setTimeout(() => {
                     if (enemies.includes(target)) {
                         const index = enemies.indexOf(target);
@@ -589,7 +578,6 @@
                     }
                 }, 300 + i * 50);
             });
-
             updateOverdrive(lockedTargets.length);
             lockedTargets = [];
         }
@@ -597,23 +585,60 @@
         // --- UI and State Updates ---
         
         function updateScore(points) {
+            if (!gameStarted) return;
             score += points;
             scoreEl.textContent = `Score: ${score}`;
             
             const oldLevel = evolutionLevel;
-            evolutionLevel = Math.floor(score / 2000) + 1;
+            evolutionLevel = Math.min(4, Math.floor(score / 2000) + 1);
             if (evolutionLevel > oldLevel) {
                 updatePlayerAvatar();
                 levelEl.textContent = `Evolution: ${evolutionLevel}`;
                 showMessage(`EVOLUTION LEVEL ${evolutionLevel}`);
+                // Start new music layers
+                if (evolutionLevel >= 2 && bassLoop.state !== 'started') bassLoop.start(0);
+                if (evolutionLevel >= 3 && melodyLoop.state !== 'started') melodyLoop.start(0);
             }
         }
         
         function updateOverdrive(amount) {
             overdrive = Math.min(100, overdrive + amount * 2);
             overdriveEl.textContent = `Overdrive: ${Math.floor(overdrive)}%`;
+            if (overdrive >= 100) {
+                overdriveEl.style.color = '#00ff00';
+                overdriveEl.style.textShadow = '0 0 10px #00ff00';
+            } else {
+                overdriveEl.style.color = '#fff';
+                overdriveEl.style.textShadow = '0 0 5px #0ff';
+            }
         }
         
+        function playerTakeDamage() {
+            if (!gameStarted) return;
+            noise.triggerAttack();
+            evolutionLevel--;
+            if (evolutionLevel < 1) {
+                gameOver();
+                return;
+            }
+            // Stop music layers
+            if (evolutionLevel < 3 && melodyLoop.state === 'started') melodyLoop.stop();
+            if (evolutionLevel < 2 && bassLoop.state === 'started') bassLoop.stop();
+
+            updatePlayerAvatar();
+            levelEl.textContent = `Evolution: ${evolutionLevel}`;
+            showMessage(`SYSTEM DEGRADE - EVOLUTION ${evolutionLevel}`);
+        }
+
+        function gameOver() {
+            gameStarted = false;
+            gameTitleEl.textContent = "GAME OVER";
+            instructionsEl.innerHTML = `Final Score: ${score}<br>Refresh to try again.`;
+            startScreen.style.opacity = 1;
+            startScreen.style.pointerEvents = 'auto';
+            startButton.style.display = 'none';
+        }
+
         function showMessage(text) {
             messageBox.textContent = text;
             messageBox.classList.add('show');
@@ -627,6 +652,12 @@
         }
 
         // --- Event Handlers ---
+
+        function onKeyDown(event) {
+            if (event.code === 'Space' && gameStarted) {
+                triggerOverdrive();
+            }
+        }
 
         function onWindowResize() {
             camera.aspect = window.innerWidth / window.innerHeight;
@@ -664,7 +695,8 @@
 
         startButton.addEventListener('click', () => {
             startScreen.style.opacity = 0;
-            setTimeout(() => { startScreen.style.display = 'none'; }, 500);
+            startScreen.style.pointerEvents = 'none';
+            
             gameStarted = true;
             initAudio();
             animate();
