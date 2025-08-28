@@ -189,6 +189,10 @@
         let synth, kick, hihat, bassSynth, melodySynth;
         let musicLoop, bassLoop, melodyLoop;
         let noise;
+        
+        // --- Level Design ---
+        let levelEvents;
+        let nextEventIndex = 0;
 
         // --- Initialization ---
         function init() {
@@ -207,6 +211,7 @@
             mouse = new THREE.Vector2();
             createPath();
             createEnvironment();
+            setupLevelEvents();
             
             window.addEventListener('resize', onWindowResize, false);
             window.addEventListener('mousemove', onMouseMove, false);
@@ -251,7 +256,88 @@
             Tone.Transport.start();
         }
         
-        // --- Game Object Creation ---
+        // --- Level and Enemy Creation ---
+
+        function setupLevelEvents() {
+            levelEvents = [
+                { progress: 0.05, type: 'formation', formation: 'line', count: 4 },
+                { progress: 0.15, type: 'formation', formation: 'v_shape', count: 5 },
+                { progress: 0.25, type: 'formation', formation: 'line', count: 6, movement: 'wave' },
+                { progress: 0.35, type: 'formation', formation: 'ring', count: 8, movement: 'rotate' },
+                { progress: 0.50, type: 'formation', formation: 'v_shape', count: 3 },
+                { progress: 0.52, type: 'formation', formation: 'v_shape', count: 3 },
+                { progress: 0.65, type: 'formation', formation: 'line', count: 8, movement: 'wave' },
+                { progress: 0.80, type: 'formation', formation: 'ring', count: 6, movement: 'rotate' },
+            ];
+            nextEventIndex = 0;
+        }
+
+        function checkLevelEvents() {
+            if (nextEventIndex >= levelEvents.length) return;
+
+            const event = levelEvents[nextEventIndex];
+            if (pathProgress >= event.progress) {
+                spawnFormation(event);
+                nextEventIndex++;
+            }
+        }
+        
+        function spawnFormation(event) {
+            const formationGroup = new THREE.Group();
+            const spawnAhead = 0.15;
+            const spawnPoint = path.getPointAt((pathProgress + spawnAhead) % 1);
+            formationGroup.position.copy(spawnPoint);
+            scene.add(formationGroup);
+
+            for (let i = 0; i < event.count; i++) {
+                const enemy = createEnemy();
+                
+                // Position enemies within the formation
+                switch(event.formation) {
+                    case 'line':
+                        enemy.position.x = (i - (event.count - 1) / 2) * 10;
+                        break;
+                    case 'v_shape':
+                        enemy.position.x = (i - Math.floor(event.count / 2)) * 10;
+                        enemy.position.z = -Math.abs(i - Math.floor(event.count / 2)) * 10;
+                        break;
+                    case 'ring':
+                        const angle = (i / event.count) * Math.PI * 2;
+                        enemy.position.x = Math.cos(angle) * 20;
+                        enemy.position.y = Math.sin(angle) * 20;
+                        break;
+                }
+                
+                enemy.userData.formationGroup = formationGroup;
+                enemy.userData.movement = event.movement;
+                enemy.userData.initialPos = enemy.position.clone(); // For movement patterns
+                
+                formationGroup.add(enemy);
+                enemies.push(enemy);
+            }
+        }
+
+        function createEnemy() {
+            const enemyTypes = [
+                { geo: new THREE.IcosahedronGeometry(3, 0), color: 0xff00ff },
+                { geo: new THREE.TorusGeometry(3, 1, 4, 8), color: 0xffff00 },
+                { geo: new THREE.ConeGeometry(3, 8, 4), color: 0x00ff00 }
+            ];
+            const type = enemyTypes[Math.floor(Math.random() * enemyTypes.length)];
+            const material = new THREE.MeshBasicMaterial({ color: type.color, wireframe: true });
+            const enemy = new THREE.Mesh(type.geo, material);
+
+            enemy.userData.isEnemy = true;
+            enemy.userData.isLocked = false;
+            
+            const outlineGeo = new THREE.EdgesGeometry(enemy.geometry);
+            const outlineMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 });
+            const outline = new THREE.LineSegments(outlineGeo, outlineMat);
+            enemy.add(outline);
+            enemy.userData.outline = outline;
+
+            return enemy;
+        }
 
         function createPath() {
             path = new THREE.CatmullRomCurve3([
@@ -280,34 +366,6 @@
                 box.position.set((Math.random() - 0.5) * 1500, (Math.random() - 0.5) * 500, (Math.random() - 0.5) * 2000);
                 scene.add(box);
             }
-        }
-
-        function spawnEnemy() {
-            const enemyTypes = [
-                { geo: new THREE.IcosahedronGeometry(3, 0), color: 0xff00ff },
-                { geo: new THREE.TorusGeometry(3, 1, 4, 8), color: 0xffff00 },
-                { geo: new THREE.ConeGeometry(3, 8, 4), color: 0x00ff00 }
-            ];
-            const type = enemyTypes[Math.floor(Math.random() * enemyTypes.length)];
-            const material = new THREE.MeshBasicMaterial({ color: type.color, wireframe: true });
-            const enemy = new THREE.Mesh(type.geo, material);
-            
-            const spawnAhead = 0.1 + Math.random() * 0.05;
-            const spawnPoint = path.getPointAt((pathProgress + spawnAhead) % 1);
-            spawnPoint.x += (Math.random() - 0.5) * 80;
-            spawnPoint.y += (Math.random() - 0.5) * 40;
-            enemy.position.copy(spawnPoint);
-            enemy.userData.isEnemy = true;
-            enemy.userData.isLocked = false;
-            
-            const outlineGeo = new THREE.EdgesGeometry(enemy.geometry);
-            const outlineMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 });
-            const outline = new THREE.LineSegments(outlineGeo, outlineMat);
-            enemy.add(outline);
-            enemy.userData.outline = outline;
-
-            enemies.push(enemy);
-            scene.add(enemy);
         }
         
         function createProjectile(start, end) {
@@ -423,23 +481,21 @@
         function triggerOverdrive() {
             if (overdrive < 100) return;
             overdrive = 0;
-            updateOverdrive(0); // Update UI immediately
+            updateOverdrive(0);
 
             noise.triggerAttackRelease("2n");
 
-            // Visual effect
             const shockwaveGeo = new THREE.SphereGeometry(1, 32, 32);
             const shockwaveMat = new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.8 });
             overdriveShockwave = new THREE.Mesh(shockwaveGeo, shockwaveMat);
             overdriveShockwave.position.copy(player.position);
             scene.add(overdriveShockwave);
 
-            // Destroy all enemies
             for (let i = enemies.length - 1; i >= 0; i--) {
                 const enemy = enemies[i];
-                createExplosion(enemy.position, enemy.material.color);
-                updateScore(50); // Bonus points for overdrive kills
-                scene.remove(enemy);
+                createExplosion(enemy.getWorldPosition(new THREE.Vector3()), enemy.material.color);
+                updateScore(50);
+                enemy.parent.remove(enemy);
                 enemies.splice(i, 1);
             }
         }
@@ -453,8 +509,14 @@
             const time = clock.getElapsedTime();
 
             pathProgress += delta * 0.01;
-            if (pathProgress > 1) { pathProgress = 0; showMessage("SYSTEM LOOP COMPLETE"); }
+            if (pathProgress >= 1) { 
+                pathProgress = 0; 
+                nextEventIndex = 0; // Loop events
+                showMessage("SYSTEM LOOP COMPLETE"); 
+            }
             
+            checkLevelEvents();
+
             const currentPos = path.getPointAt(pathProgress);
             const nextPos = path.getPointAt((pathProgress + 0.001) % 1);
             camera.position.copy(currentPos);
@@ -476,10 +538,8 @@
                     overdriveShockwave = null;
                 }
             }
-
-            if (Math.random() < 0.03) spawnEnemy();
             
-            updateEnemies(delta);
+            updateEnemies(delta, time);
             updateProjectiles(delta);
             updateParticles(delta);
             
@@ -488,27 +548,39 @@
             renderer.render(scene, camera);
         }
 
-        function updateEnemies(delta) {
+        function updateEnemies(delta, time) {
             for (let i = enemies.length - 1; i >= 0; i--) {
                 const enemy = enemies[i];
-                enemy.rotation.x += delta * 0.2;
-                enemy.rotation.y += delta * 0.3;
+                const group = enemy.userData.formationGroup;
+
+                // Animate individual enemy
+                enemy.rotation.y += delta * 0.5;
+
+                // Animate movement patterns
+                if (enemy.userData.movement === 'wave') {
+                    enemy.position.y = enemy.userData.initialPos.y + Math.sin(time * 3 + enemy.userData.initialPos.x) * 5;
+                }
+                if (enemy.userData.movement === 'rotate') {
+                    group.rotation.z += delta * 0.5;
+                }
                 
+                const worldPos = enemy.getWorldPosition(new THREE.Vector3());
+
                 // Collision check with player
-                if (enemy.position.distanceTo(player.position) < 3) {
+                if (worldPos.distanceTo(player.position) < 3) {
                     playerTakeDamage();
-                    scene.remove(enemy);
+                    group.remove(enemy);
                     enemies.splice(i, 1);
-                    continue; // Skip next check
+                    continue;
                 }
 
-                const distanceToPlayer = enemy.position.distanceTo(camera.position);
-                const directionToPlayer = enemy.position.clone().sub(camera.position).normalize();
+                const distanceToPlayer = worldPos.distanceTo(camera.position);
+                const directionToPlayer = worldPos.clone().sub(camera.position).normalize();
                 const cameraDirection = camera.getWorldDirection(new THREE.Vector3());
                 const dot = directionToPlayer.dot(cameraDirection);
 
                 if (dot < -0.5 && distanceToPlayer > 100) {
-                    scene.remove(enemy);
+                    group.remove(enemy);
                     enemies.splice(i, 1);
                 }
             }
@@ -565,15 +637,16 @@
             bassSynth.triggerAttackRelease(lockedTargets.length > 4 ? 'G1' : 'C1', '8n');
             lockedTargets.forEach((target, i) => {
                 const startPos = player.position.clone();
-                const endPos = target.position.clone();
+                const endPos = target.getWorldPosition(new THREE.Vector3());
                 createProjectile(startPos, endPos);
                 setTimeout(() => {
-                    if (enemies.includes(target)) {
-                        const index = enemies.indexOf(target);
+                    const index = enemies.indexOf(target);
+                    if (index > -1) {
+                        const worldPos = target.getWorldPosition(new THREE.Vector3());
+                        target.parent.remove(target);
                         enemies.splice(index, 1);
-                        scene.remove(target);
                         kick.triggerAttackRelease('C2', '8n', Tone.now() + i * 0.05);
-                        createExplosion(target.position, target.material.color);
+                        createExplosion(worldPos, target.material.color);
                         updateScore(100 * (i + 1));
                     }
                 }, 300 + i * 50);
@@ -595,7 +668,6 @@
                 updatePlayerAvatar();
                 levelEl.textContent = `Evolution: ${evolutionLevel}`;
                 showMessage(`EVOLUTION LEVEL ${evolutionLevel}`);
-                // Start new music layers
                 if (evolutionLevel >= 2 && bassLoop.state !== 'started') bassLoop.start(0);
                 if (evolutionLevel >= 3 && melodyLoop.state !== 'started') melodyLoop.start(0);
             }
@@ -621,7 +693,6 @@
                 gameOver();
                 return;
             }
-            // Stop music layers
             if (evolutionLevel < 3 && melodyLoop.state === 'started') melodyLoop.stop();
             if (evolutionLevel < 2 && bassLoop.state === 'started') bassLoop.stop();
 
