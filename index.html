@@ -180,7 +180,7 @@
     <div id="message-box"></div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.7.77/Tone.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tone@15.1.22/build/Tone.js"></script>
 
     <script>
         // --- DOM Elements ---
@@ -224,6 +224,7 @@
         let overdriveShockwave;
 
         // --- Audio Engine (Tone.js) ---
+    // IMPORTANT: Always call initAudio() after a user gesture (e.g., button click) to allow AudioContext to start.
         let lockOnSynth, kick, clap, hihat, bassSynth, melodySynth, padSynth, fireWhoosh;
         let musicLoop, bassLoop, melodyLoop, padLoop;
         let canLockSound = true;
