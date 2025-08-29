@@ -386,25 +386,35 @@
         }
         
         function createProjectile(start, end) {
-            const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), end.clone().sub(start)]);
-            const mat = new THREE.LineBasicMaterial({ color: 0x00ffff, linewidth: 2 });
+            // Rez-style: curved arc projectile
+            const control = start.clone().lerp(end, 0.5).add(new THREE.Vector3(0, 10, 0));
+            const curve = new THREE.QuadraticBezierCurve3(start, control, end);
+            const points = curve.getPoints(32);
+            const geo = new THREE.BufferGeometry().setFromPoints(points);
+            const mat = new THREE.LineBasicMaterial({ color: 0x00ffff, linewidth: 4, transparent: true, opacity: 0.9 });
             const projectile = new THREE.Line(geo, mat);
-            projectile.position.copy(start);
-            projectile.userData.target = end;
-            projectile.userData.speed = 10;
+            projectile.userData.curve = curve;
+            projectile.userData.t = 0;
+            projectile.userData.speed = 1.5; // seconds to reach target
+            projectile.userData.target = end.clone();
+            projectile.userData.start = start.clone();
+            projectile.userData.control = control.clone();
             projectiles.push(projectile);
             scene.add(projectile);
         }
         
         function createExplosion(position, color) {
-            const particleCount = 20;
+            const particleCount = 40;
             for (let i = 0; i < particleCount; i++) {
-                const geo = new THREE.SphereGeometry(0.2, 4, 4);
-                const mat = new THREE.MeshBasicMaterial({ color: color, transparent: true });
+                const geo = new THREE.SphereGeometry(0.25, 6, 6);
+                const mat = new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0.9 });
                 const particle = new THREE.Mesh(geo, mat);
                 particle.position.copy(position);
-                particle.userData.velocity = new THREE.Vector3((Math.random() - 0.5), (Math.random() - 0.5), (Math.random() - 0.5)).normalize().multiplyScalar(Math.random() * 5 + 2);
-                particle.userData.lifespan = 1.0;
+                // Color cycling for Rez effect
+                const hue = (i / particleCount) * 360;
+                particle.material.color.setHSL(hue/360, 1, 0.5);
+                particle.userData.velocity = new THREE.Vector3((Math.random() - 0.5), (Math.random() - 0.5), (Math.random() - 0.5)).normalize().multiplyScalar(Math.random() * 7 + 3);
+                particle.userData.lifespan = 1.2;
                 particles.push(particle);
                 scene.add(particle);
             }
@@ -531,10 +541,17 @@
         function updateProjectiles(delta) {
             for (let i = projectiles.length - 1; i >= 0; i--) {
                 const p = projectiles[i];
-                const moveDist = p.userData.speed * delta;
-                const distanceToTarget = p.position.distanceTo(p.userData.target);
-                if (distanceToTarget < moveDist) { scene.remove(p); projectiles.splice(i, 1); } 
-                else { const direction = p.userData.target.clone().sub(p.position).normalize(); p.position.add(direction.multiplyScalar(moveDist)); }
+                p.userData.t += delta / p.userData.speed;
+                if (p.userData.t >= 1) {
+                    scene.remove(p);
+                    projectiles.splice(i, 1);
+                } else {
+                    // Animate along curve
+                    const pos = p.userData.curve.getPoint(p.userData.t);
+                    p.position.copy(pos);
+                    // Animate opacity for Rez effect
+                    p.material.opacity = 0.5 + 0.5 * Math.sin(p.userData.t * Math.PI);
+                }
             }
         }
         
@@ -567,28 +584,42 @@
         }
 
         function fireProjectiles() {
-            if (lockedTargets.length === 0) return;
-            if (fireWhoosh) fireWhoosh.triggerAttackRelease("0.5n");
-            lockedTargets.forEach((target, i) => {
-                const startPos = player.position.clone();
-                const endPos = target.getWorldPosition(new THREE.Vector3());
-                createProjectile(startPos, endPos);
+            if (!gameStarted || isPaused || lockedTargets.length === 0) return;
+            // Sort targets by their screen X position for a true sweep
+            const sortedTargets = lockedTargets.slice().sort((a, b) => {
+                const aPos = a.getWorldPosition(new THREE.Vector3());
+                const bPos = b.getWorldPosition(new THREE.Vector3());
+                const aScreen = aPos.project(camera);
+                const bScreen = bPos.project(camera);
+                return aScreen.x - bScreen.x;
+            });
+            sortedTargets.forEach((target, i) => {
                 setTimeout(() => {
-                    const index = enemies.indexOf(target);
-                    if (index > -1) {
-                        const worldPos = target.getWorldPosition(new THREE.Vector3());
-                        target.parent.remove(target);
-                        enemies.splice(index, 1);
-                        Tone.Transport.scheduleOnce(time => {
-                            kick.triggerAttackRelease('C2', '8n', time);
-                            clap.triggerAttackRelease('8n', time + 0.001);
-                        }, `@16n+${i*0.05}`);
-                        createExplosion(worldPos, target.material.color);
-                        updateScore(100 * (i + 1));
-                    }
-                }, 300 + i * 50);
+                    const startPos = player.position.clone();
+                    const endPos = target.getWorldPosition(new THREE.Vector3());
+                    createProjectile(startPos, endPos);
+                    // Rhythmic synth shot
+                    if (lockOnSynth) lockOnSynth.triggerAttackRelease('C5', '16n', undefined, 0.7 - i*0.05);
+                    if (fireWhoosh) fireWhoosh.triggerAttackRelease('16n', undefined, 0.5 + i*0.05);
+                    setTimeout(() => {
+                        const index = enemies.indexOf(target);
+                        if (index > -1) {
+                            const worldPos = target.getWorldPosition(new THREE.Vector3());
+                            target.parent.remove(target);
+                            enemies.splice(index, 1);
+                            Tone.Transport.scheduleOnce(time => {
+                                kick.triggerAttackRelease('C2', '8n', time);
+                                clap.triggerAttackRelease('8n', time + 0.001);
+                            }, `@16n+${i*0.05}`);
+                            createExplosion(worldPos, target.material.color);
+                            updateScore(100 * (i + 1));
+                        }
+                    }, 150);
+                }, i * 60); // Stagger sweep
             });
             updateOverdrive(lockedTargets.length);
+            // Reset lock states
+            enemies.forEach(e => { if (e.userData.isLocked) { e.userData.isLocked = false; e.userData.outline.material.opacity = 0; } });
             lockedTargets = [];
         }
         
@@ -667,7 +698,14 @@
 
         function onKeyDown(event) { if (event.code === 'Space' && gameStarted && !isPaused) { triggerOverdrive(); } }
         function onWindowResize() { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); }
-        function onMouseMove(event) { mouse.x = (event.clientX / window.innerWidth) * 2 - 1; mouse.y = -(event.clientY / window.innerHeight) * 2 + 1; reticleEl.style.left = `${event.clientX}px`; reticleEl.style.top = `${event.clientY}px`; }
+        function onMouseMove(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            // Set reticle position to cursor
+            reticleEl.style.left = `${event.clientX}px`;
+            reticleEl.style.top = `${event.clientY}px`;
+            reticleEl.style.transform = "translate(-50%, -50%)";
+        }
         function onMouseDown(event) { if (event.button === 0 && gameStarted && !isPaused) { isLocking = true; reticleEl.classList.add('locking'); } }
         function onMouseUp(event) {
             if (event.button === 0 && gameStarted && !isPaused) {
