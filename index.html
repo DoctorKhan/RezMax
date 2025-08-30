@@ -386,8 +386,11 @@
         }
         
         function createProjectile(start, end) {
-            // Rez-style: curved arc projectile
-            const control = start.clone().lerp(end, 0.5).add(new THREE.Vector3(0, 10, 0));
+            // Rez-style: improved arc projectile
+            const mid = start.clone().lerp(end, 0.5);
+            const dir = end.clone().sub(start).normalize();
+            const perp = new THREE.Vector3(-dir.z, 0, dir.x).normalize(); // Perpendicular in XZ plane
+            const control = mid.clone().add(perp.multiplyScalar(10)); // 10 units offset for arc
             const curve = new THREE.QuadraticBezierCurve3(start, control, end);
             const points = curve.getPoints(32);
             const geo = new THREE.BufferGeometry().setFromPoints(points);
@@ -607,10 +610,11 @@
                             const worldPos = target.getWorldPosition(new THREE.Vector3());
                             target.parent.remove(target);
                             enemies.splice(index, 1);
+                            // Add a small offset to avoid Tone.js scheduling error
                             Tone.Transport.scheduleOnce(time => {
                                 kick.triggerAttackRelease('C2', '8n', time);
                                 clap.triggerAttackRelease('8n', time + 0.001);
-                            }, `@16n+${i*0.05}`);
+                            }, `@16n+${i*0.05+0.001}`);
                             createExplosion(worldPos, target.material.color);
                             updateScore(100 * (i + 1));
                         }
